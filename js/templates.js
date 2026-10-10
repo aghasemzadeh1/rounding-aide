@@ -11,7 +11,8 @@ const Q = {
   flatus:    { id: 'flatus', label: 'Flatus', short: 'Flatus', options: ['Yes', 'No'] },
   bm:        { id: 'bm', label: 'BM', short: 'BM', options: ['Yes', 'No'] },
   po:        { id: 'po', label: 'Diet tolerance', short: 'PO', options: ['Tolerating', 'Poor appetite', 'Not tolerating', 'NPO'], flag: ['Not tolerating'] },
-  amb:       { id: 'amb', label: 'Ambulation', short: 'Amb', options: ['Independent', 'With assistance', 'Not yet'] },
+  // `follow` shows a number box when the given answer is picked (stored per note, not copied forward).
+  amb:       { id: 'amb', label: 'Ambulating', short: 'Amb', options: ['Yes', 'No'], follow: { when: 'Yes', label: 'Laps around the floor today', unit: 'laps' } },
   is:        { id: 'is', label: 'Incentive spirometer', short: 'IS', options: ['Using', 'Not using'] },
   events:    { id: 'events', label: 'Overnight/interval events', short: 'Events', options: ['None', 'See comments'], flag: ['See comments'] },
   // procedure-specific
@@ -30,10 +31,17 @@ export const QUESTIONS = Q;
 const COMMON_SUBJ = [Q.pain, Q.nv, Q.flatus, Q.bm, Q.po, Q.amb, Q.is];
 
 // Exam chips: `n: true` marks the finding filled in by "Normal" / "All normal".
+// `g` puts a chip in a labeled sub-row; EXAM_GROUPS says whether that row is pick-one (true) or pick-many (false).
+export const EXAM_GROUPS = { Consistency: true, Tenderness: true, Distension: true, Incision: false };
 const EXAM_BASE = [
   { name: 'General', chips: [{ t: 'NAD', n: true }, { t: 'A&Ox3', n: true }, { t: 'Resting comfortably' }, { t: 'Appears uncomfortable' }, { t: 'Lethargic' }, { t: 'Ill-appearing' }, { t: 'Diaphoretic' }] },
   { name: 'Resp', chips: [{ t: 'Non-labored breathing', n: true }, { t: 'On room air', n: true }, { t: 'CTAB' }, { t: 'On NC O2' }, { t: 'Diminished bases' }, { t: 'Crackles' }, { t: 'Wheezing' }, { t: 'Tachypneic' }] },
-  { name: 'Abd', chips: [{ t: 'Soft', n: true }, { t: 'Non-distended', n: true }, { t: 'Appropriately TTP', n: true }, { t: 'Incisions c/d/i', n: true }, { t: 'Mildly distended' }, { t: 'Distended' }, { t: 'Tympanic' }, { t: 'Diffusely tender' }, { t: 'Rebound/guarding' }, { t: 'Incisional erythema' }, { t: 'Incisional drainage' }] },
+  { name: 'Abd', chips: [
+    { t: 'Soft', g: 'Consistency', n: true }, { t: 'Rigid', g: 'Consistency' },
+    { t: 'Non-tender', g: 'Tenderness' }, { t: 'Appropriately tender', g: 'Tenderness', n: true }, { t: 'Minimally tender', g: 'Tenderness' }, { t: 'Moderately tender', g: 'Tenderness' },
+    { t: 'Non-distended', g: 'Distension', n: true }, { t: 'Minimally distended', g: 'Distension' }, { t: 'Moderately distended', g: 'Distension' },
+    { t: 'Incision c/d/i', g: 'Incision', n: true }, { t: 'Incision with erythema', g: 'Incision' }, { t: 'Incision with drainage', g: 'Incision' },
+  ] },
   { name: 'GU', chips: [{ t: 'Scrotal edema' }, { t: 'Penile edema' }, { t: 'Hematoma' }] },
   { name: 'Urine', chips: [{ t: 'Clear yellow', n: true }, { t: 'Light pink' }, { t: 'Pink' }, { t: 'Red' }, { t: 'Clots' }, { t: 'Cloudy' }, { t: 'Concentrated' }, { t: 'Sediment' }] },
 ];
@@ -100,7 +108,7 @@ export function examFor(procKey, drains = []) {
 
   const proc = procByKey(procKey);
   for (const [name, list] of Object.entries(proc?.exam || {})) add(name, list);
-  // Normal findings first, then abnormal ones.
-  for (const s of sys) s.chips = [...s.chips.filter(c => c.n), ...s.chips.filter(c => !c.n)];
+  // Ungrouped chips: normal findings first, then abnormal ones. Grouped rows keep their defined order.
+  for (const s of sys) s.chips = [...s.chips.filter(c => c.g), ...s.chips.filter(c => !c.g && c.n), ...s.chips.filter(c => !c.g && !c.n)];
   return sys;
 }

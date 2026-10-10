@@ -1,11 +1,11 @@
-import { PROCEDURES, DRAIN_OPTIONS, DIET_OPTIONS, QUESTIONS, procByKey, subjFor, examFor } from './templates.js';
+import { PROCEDURES, DRAIN_OPTIONS, DIET_OPTIONS, QUESTIONS, EXAM_GROUPS, procByKey, subjFor, examFor } from './templates.js';
 import { data, save, uid, replaceAll, isValidBackup } from './store.js';
 
 const main = document.getElementById('main');
 const topbar = document.getElementById('topbar');
 const footer = document.getElementById('footer');
 let H = {};              // click handlers for the current view, keyed by data-act
-let leaveGuard = null;   // returns true when it's OK to leave the current view
+let leaveGuard = null;   // resolves true when it's OK to leave the current view
 
 // ---------- helpers ----------
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -73,11 +73,12 @@ async function shareText(title, text) {
 }
 
 // ---------- chips (button groups; the DOM holds the selection state) ----------
-function chips(group, options, selected = [], { multi = false } = {}) {
+// `only` lists options that can't be combined with others in a pick-many row (e.g. "Incision c/d/i").
+function chips(group, options, selected = [], { multi = false, sys = '', only = [] } = {}) {
   const sel = new Set(selected);
   const all = [...options, ...selected.filter(v => !options.includes(v))];
-  return `<div class="chips" data-group="${esc(group)}" data-multi="${multi ? 1 : 0}">${all
-    .map(o => `<button type="button" class="chip${sel.has(o) ? ' on' : ''}" data-act="chip" data-val="${esc(o)}" aria-pressed="${sel.has(o)}">${esc(o)}</button>`)
+  return `<div class="chips" data-group="${esc(group)}" data-multi="${multi ? 1 : 0}"${sys ? ` data-sys="${esc(sys)}"` : ''}>${all
+    .map(o => `<button type="button" class="chip${sel.has(o) ? ' on' : ''}" data-act="chip" data-val="${esc(o)}"${only.includes(o) ? ' data-only="1"' : ''} aria-pressed="${sel.has(o)}">${esc(o)}</button>`)
     .join('')}</div>`;
 }
 const groupEl = group => main.querySelector(`.chips[data-group="${CSS.escape(group)}"]`);
@@ -90,17 +91,44 @@ function setChips(group, vals) {
     b.setAttribute('aria-pressed', on);
   });
 }
+// An exam system can span several chip rows (sub-groups); these read/write all of them.
+const sysEls = name => [...main.querySelectorAll(`.chips[data-sys="${CSS.escape(name)}"]`)];
+const readSys = name => sysEls(name).flatMap(el => [...el.querySelectorAll('.chip.on')].map(b => b.dataset.val));
+const setSys = (name, vals) => sysEls(name).forEach(el => setChips(el.dataset.group, vals));
+
+// In-app Yes/No dialog (resolves true for Yes).
+function ask(title, message, { yes = 'Yes', no = 'No', danger = true } = {}) {
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-backdrop';
+    wrap.innerHTML = `<div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="mTitle">
+      <h3 id="mTitle">${esc(title)}</h3>${message ? `<p>${esc(message)}</p>` : ''}
+      <div class="modal-actions"><button type="button" class="btn" data-m="no">${esc(no)}</button>
+      <button type="button" class="btn ${danger ? 'danger-fill' : 'primary'}" data-m="yes">${esc(yes)}</button></div></div>`;
+    wrap.addEventListener('click', e => {
+      const b = e.target.closest('[data-m]');
+      if (!b && e.target !== wrap) return;
+      e.stopPropagation();
+      wrap.remove();
+      resolve(b?.dataset.m === 'yes');
+    });
+    document.body.appendChild(wrap);
+    wrap.querySelector('[data-m="no"]').focus();
+  });
+}
+
 function toggleChip(btn) {
   const wrap = btn.closest('.chips');
   const turnOn = !btn.classList.contains('on');
-  if (wrap.dataset.multi !== '1') wrap.querySelectorAll('.chip.on').forEach(b => { b.classList.remove('on'); b.setAttribute('aria-pressed', false); });
+  const clear = wrap.dataset.multi !== '1' ? '.chip.on' : btn.dataset.only ? '.chip.on' : '.chip.on[data-only]';
+  if (turnOn) wrap.querySelectorAll(clear).forEach(b => { b.classList.remove('on'); b.setAttribute('aria-pressed', false); });
   btn.classList.toggle('on', turnOn);
   btn.setAttribute('aria-pressed', turnOn);
 }
 
 // ---------- navigation ----------
-function navigate(href) {
-  if (leaveGuard && !leaveGuard()) return;
+async function navigate(href) {
+  if (leaveGuard && !(await leaveGuard())) return;
   leaveGuard = null;
   if (location.hash === href) route(); else location.hash = href;
 }
@@ -187,7 +215,8 @@ function questionsFor(n, p) {
   for (const id of Object.keys(n?.subj || {})) if (!qs.some(q => q.id === id) && QUESTIONS[id]) qs.splice(qs.length - 1, 0, QUESTIONS[id]);
   return qs;
 }
-const subjLines = (n, p) => questionsFor(n, p).filter(q => n.subj?.[q.id]).map(q => `${q.label}: ${n.subj[q.id]}`);
+const followText = (n, q) => (q.follow && n.subj?.[q.id] === q.follow.when && n.follow?.[q.id] ? `, ${n.follow[q.id]} ${q.follow.unit}` : '');
+const subjLines = (n, p) => questionsFor(n, p).filter(q => n.subj?.[q.id]).map(q => `${q.label}: ${n.subj[q.id]}${followText(n, q)}`);
 const examSystems = (n, p) => examFor(p.procedure, n.drains || []);
 
 // ---------- census ----------
@@ -316,8 +345,8 @@ function viewPatientForm(p) {
     persist();
     navigate(`#/p/${target.id}`);
   };
-  H.delete = () => {
-    if (!confirm(`Delete ${p.name} and all of their notes? This cannot be undone.`)) return;
+  H.delete = async () => {
+    if (!(await ask(`Do you really want to delete ${p.name}?`, 'All of their notes will be deleted too. This cannot be undone.', { yes: 'Yes, delete' }))) return;
     const d = data();
     d.patients = d.patients.filter(x => x.id !== p.id);
     d.notes = d.notes.filter(n => n.patientId !== p.id);
@@ -329,7 +358,7 @@ function viewPatientForm(p) {
 // ---------- patient view ----------
 function noteSummary(n, p) {
   const items = questionsFor(n, p).filter(q => n.subj?.[q.id] && q.id !== 'events')
-    .map(q => ({ t: `${q.short}: ${n.subj[q.id]}`, warn: q.flag?.includes(n.subj[q.id]) }));
+    .map(q => ({ t: `${q.short}: ${n.subj[q.id]}${followText(n, q)}`, warn: q.flag?.includes(n.subj[q.id]) }));
   if (n.subj?.events === 'See comments') items.push({ t: 'Events', warn: true });
   const normals = new Set(examSystems(n, p).flatMap(s => s.chips.filter(c => c.n).map(c => c.t)));
   const known = new Set(examSystems(n, p).flatMap(s => s.chips.map(c => c.t)));
@@ -375,7 +404,8 @@ function viewPatient(p) {
     }).join('')}</ul>` : '<p class="empty small">No notes yet.</p>'}
     <section class="card"><button class="btn subtle" data-act="discharge">${discharged ? 'Return to census' : 'Discharge (remove from census)'}</button></section>`;
 
-  H.discharge = () => {
+  H.discharge = async () => {
+    if (!discharged && !(await ask(`Discharge ${p.name}?`, 'They will be removed from the census. Notes are kept and they can be returned from Settings.', { yes: 'Yes, discharge', danger: false }))) return;
     if (discharged) { p.active = true; delete p.dischargedAt; }
     else { p.active = false; p.dischargedAt = new Date().toISOString(); }
     persist();
@@ -392,7 +422,7 @@ function viewNoteEditor({ p, note, copy }) {
     d = JSON.parse(JSON.stringify(note));
   } else {
     const now = new Date();
-    d = { id: null, patientId: p.id, at: now.toISOString(), session: now.getHours() < 12 ? 'AM' : 'PM', subj: {}, comment: '', exam: {}, examText: {},
+    d = { id: null, patientId: p.id, at: now.toISOString(), session: now.getHours() < 12 ? 'AM' : 'PM', subj: {}, follow: {}, comment: '', exam: {}, examText: {},
       drains: [...(p.drains || [])], drainsNote: p.drainsNote || '', diet: p.diet || '', dietNote: p.dietNote || '' };
     if (copy && last) {
       d.subj = { ...last.subj };
@@ -429,7 +459,9 @@ function viewNoteEditor({ p, note, copy }) {
 
     <h2 class="section-title">Subjective</h2>
     <section class="card">
-      ${qs.map(q => `<div class="q"><div class="q-label">${esc(q.label)}</div>${chips('subj:' + q.id, q.options, d.subj[q.id] ? [d.subj[q.id]] : [])}</div>`).join('')}
+      ${qs.map(q => `<div class="q"><div class="q-label">${esc(q.label)}</div>${chips('subj:' + q.id, q.options, d.subj[q.id] ? [d.subj[q.id]] : [])}
+        ${q.follow ? `<label class="field follow" data-follow="${q.id}"${d.subj[q.id] === q.follow.when ? '' : ' hidden'}><span>${esc(q.follow.label)}</span>
+          <input type="number" inputmode="numeric" min="0" name="f:${q.id}" value="${esc(d.follow?.[q.id] || '')}"></label>` : ''}</div>`).join('')}
       <label class="field"><span>Comments</span><textarea name="comment" rows="3" placeholder="Overnight events, concerns…">${esc(d.comment)}</textarea></label>
     </section>
 
@@ -448,14 +480,27 @@ function viewNoteEditor({ p, note, copy }) {
       <div class="sys-head"><h3>${esc(s.name)}</h3>
         <span><button type="button" class="btn small" data-act="sysNormal" data-sys="${esc(s.name)}">Normal</button>
         <button type="button" class="btn small subtle" data-act="sysClear" data-sys="${esc(s.name)}">Clear</button></span></div>
-      ${chips('exam:' + s.name, s.chips.map(c => c.t), sel[s.name] || [], { multi: true })}
+      ${examRows(s, sel[s.name] || [])}
       <input name="ex:${esc(s.name)}" value="${esc(text[s.name] || '')}" placeholder="Other ${esc(s.name.toLowerCase())} findings" aria-label="Other ${esc(s.name)} findings">
     </section>`).join('');
+  }
+  // Grouped chips get a labeled row each (pick-one or pick-many per EXAM_GROUPS); the rest share one row.
+  function examRows(s, sel) {
+    const known = new Set(s.chips.map(c => c.t));
+    const rows = [];
+    for (const [g, single] of Object.entries(EXAM_GROUPS)) {
+      const opts = s.chips.filter(c => c.g === g).map(c => c.t);
+      if (opts.length) rows.push(`<div class="sub-label">${esc(g)}</div>${chips(`exam:${s.name}:${g}`, opts, sel.filter(v => opts.includes(v)), { multi: !single, sys: s.name, only: s.chips.filter(c => c.g === g && c.n).map(c => c.t) })}`);
+    }
+    const rest = s.chips.filter(c => !c.g).map(c => c.t);
+    const restSel = sel.filter(v => rest.includes(v) || !known.has(v));
+    if (rest.length || restSel.length) rows.push(`${rows.length ? '<div class="sub-label">Other</div>' : ''}${chips('exam:' + s.name, rest, restSel, { multi: true, sys: s.name })}`);
+    return rows.join('');
   }
   function readExam() {
     const sel = {}, text = {};
     for (const s of systems) {
-      const v = readChips('exam:' + s.name);
+      const v = readSys(s.name);
       const t = form.elements['ex:' + s.name]?.value.trim();
       if (v.length) sel[s.name] = v;
       if (t) text[s.name] = t;
@@ -474,15 +519,21 @@ function viewNoteEditor({ p, note, copy }) {
   form.elements.at.addEventListener('change', updatePod);
   form.addEventListener('input', () => { dirty = true; });
   form.addEventListener('submit', e => e.preventDefault());
-  leaveGuard = () => !dirty || confirm('Discard changes to this note?');
+  leaveGuard = async () => !dirty || ask('Discard changes to this note?', '', { yes: 'Discard', no: 'Keep editing' });
 
   H.onChip = group => {
     dirty = true;
+    const q = group.startsWith('subj:') && QUESTIONS[group.slice(5)];
+    if (q?.follow) {
+      const box = main.querySelector(`[data-follow="${q.id}"]`);
+      box.hidden = readChips(group)[0] !== q.follow.when;
+      if (!box.hidden) box.querySelector('input').focus();
+    }
     if (group === 'drains') { const cur = readExam(); renderExam(cur.sel, cur.text); }
   };
-  H.sysNormal = el => { setChips('exam:' + el.dataset.sys, normalsFor(el.dataset.sys)); dirty = true; };
-  H.sysClear = el => { setChips('exam:' + el.dataset.sys, []); dirty = true; };
-  H.allNormal = () => { systems.forEach(s => setChips('exam:' + s.name, normalsFor(s.name))); dirty = true; toast('Exam set to normal'); };
+  H.sysNormal = el => { setSys(el.dataset.sys, normalsFor(el.dataset.sys)); dirty = true; };
+  H.sysClear = el => { setSys(el.dataset.sys, []); dirty = true; };
+  H.allNormal = () => { systems.forEach(s => setSys(s.name, normalsFor(s.name))); dirty = true; toast('Exam set to normal'); };
   H.cancel = () => navigate(note ? `#/n/${note.id}` : `#/p/${p.id}`);
   H.saveNote = () => {
     const at = atDate();
@@ -493,6 +544,7 @@ function viewNoteEditor({ p, note, copy }) {
       at: at.toISOString(),
       session: readChips('session')[0] || (at.getHours() < 12 ? 'AM' : 'PM'),
       subj: {},
+      follow: {},
       comment: form.elements.comment.value.trim(),
       exam: sel,
       examText: text,
@@ -503,7 +555,12 @@ function viewNoteEditor({ p, note, copy }) {
       createdAt: d.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    for (const q of qs) { const v = readChips('subj:' + q.id)[0]; if (v) n.subj[q.id] = v; }
+    for (const q of qs) {
+      const v = readChips('subj:' + q.id)[0];
+      if (v) n.subj[q.id] = v;
+      const f = q.follow && v === q.follow.when && form.elements['f:' + q.id].value.trim();
+      if (f) n.follow[q.id] = f;
+    }
 
     const notes = data().notes;
     const i = notes.findIndex(x => x.id === n.id);
@@ -541,8 +598,8 @@ function viewNote(n, p) {
 
   H.copy = () => copyText(text);
   H.share = () => shareText('Rounds note', text);
-  H.del = () => {
-    if (!confirm('Delete this note? This cannot be undone.')) return;
+  H.del = async () => {
+    if (!(await ask('Do you really want to delete this note?', 'This cannot be undone.', { yes: 'Yes, delete' }))) return;
     data().notes = data().notes.filter(x => x.id !== n.id);
     persist();
     navigate(`#/p/${p.id}`);
@@ -634,7 +691,7 @@ function viewSettings() {
     try {
       const s = JSON.parse(await file.text());
       if (!isValidBackup(s)) throw new Error();
-      if (!confirm(`Replace everything on this device with the backup (${s.patients.length} patients, ${s.notes.length} notes)?`)) return;
+      if (!(await ask('Replace everything on this device with the backup?', `${s.patients.length} patients, ${s.notes.length} notes. Current data will be overwritten.`, { yes: 'Yes, replace' }))) return;
       if (!replaceAll(s)) throw new Error();
       toast('Backup restored');
       navigate('#/');
@@ -642,8 +699,8 @@ function viewSettings() {
       toast('That file is not a valid backup');
     }
   });
-  H.wipe = () => {
-    if (!confirm('Erase ALL patients and notes from this device? This cannot be undone.')) return;
+  H.wipe = async () => {
+    if (!(await ask('Do you really want to erase ALL data?', 'Every patient and note on this device will be deleted. This cannot be undone.', { yes: 'Yes, erase' }))) return;
     replaceAll({ patients: [], notes: [] });
     navigate('#/');
   };
