@@ -210,3 +210,14 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
 .modal-actions .btn { flex: 1; }
 .btn.danger-fill { background: var(--danger); color: #fff; }
+
+/* procedure rows on the patient form */
+.proc-row + .proc-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.proc-row-head { display: flex; align-items: center; justify-content: space-between; min-height: 36px; }
+.proc-row-head .sub-label { margin: 0 0 0 2px; }
+.proc-row select, .proc-row input { display: block; width: 100%; font-size: 16px; padding: 10px 12px; min-height: 44px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); -webkit-appearance: none; appearance: none; margin-top: 6px; }
+.proc-date-row { display: flex; align-items: center; gap: 10px; }
+.proc-date-row input { flex: 1; }
+.proc-date-row .hint { margin: 6px 0 0; white-space: nowrap; }
+#procs + .btn { margin-top: 14px; }
+.info .info-proc + .muted + .info-proc, .info .info-proc + .info-proc { margin-top: 8px; }

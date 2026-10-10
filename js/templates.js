@@ -74,17 +74,21 @@ export const PROCEDURES = [
   { key: 'ilnd', label: 'Inguinal lymph node dissection', short: 'ILND', drains: ['JP'], diet: 'Regular',
     subj: [Q.wound, Q.leg],
     exam: { GU: [{ t: 'Groin incisions c/d/i', n: true }, { t: 'Groin seroma' }, { t: 'Flap edge necrosis' }, { t: 'Lower extremity edema' }] } },
+  { key: 'exlap', label: 'Exploratory laparotomy / takeback', short: 'Ex-lap', drains: [], subj: [] },
+  { key: 'ir_drain', label: 'IR drain placement', short: 'IR drain', drains: [], subj: [] },
   { key: 'other', label: 'Other', short: '', drains: [], subj: [] },
 ];
 
 export const procByKey = key => PROCEDURES.find(p => p.key === key);
 
-export function subjFor(procKey) {
-  const proc = procByKey(procKey);
-  return [...COMMON_SUBJ, ...(proc?.subj || []), Q.events];
+// Both take the patient's list of procedure keys (index surgery plus any takebacks) and combine their templates.
+export function subjFor(procKeys = []) {
+  const qs = [...COMMON_SUBJ];
+  for (const key of procKeys) for (const q of procByKey(key)?.subj || []) if (!qs.includes(q)) qs.push(q);
+  return [...qs, Q.events];
 }
 
-export function examFor(procKey, drains = []) {
+export function examFor(procKeys = [], drains = []) {
   const has = d => drains.includes(d);
   const sys = EXAM_BASE.map(s => ({ name: s.name, chips: s.chips.map(c => ({ ...c })) }));
   const add = (name, list, front = false) => {
@@ -102,12 +106,11 @@ export function examFor(procKey, drains = []) {
   if (has('SP tube')) gu.push({ t: 'SP tube in place/draining', n: true });
   if (has('CBI')) gu.push({ t: 'CBI running', n: true }, { t: 'CBI off' });
   if (has('Nephrostomy tube')) gu.push({ t: 'Nephrostomy draining', n: true });
-  const voids = !has('Foley') && !has('SP tube') && procKey !== 'rc_ic';
+  const voids = !has('Foley') && !has('SP tube') && !procKeys.includes('rc_ic');
   gu.push({ t: 'Voiding spontaneously', n: voids });
   add('GU', gu, true);
 
-  const proc = procByKey(procKey);
-  for (const [name, list] of Object.entries(proc?.exam || {})) add(name, list);
+  for (const key of procKeys) for (const [name, list] of Object.entries(procByKey(key)?.exam || {})) add(name, list);
   // Ungrouped chips: normal findings first, then abnormal ones. Grouped rows keep their defined order.
   for (const s of sys) s.chips = [...s.chips.filter(c => c.g), ...s.chips.filter(c => !c.g && c.n), ...s.chips.filter(c => !c.g && !c.n)];
   return sys;

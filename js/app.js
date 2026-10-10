@@ -19,13 +19,29 @@ const fmtDay = d => d.toLocaleDateString('en-US', { weekday: 'short', month: 'nu
 const fmtDayShort = d => d.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' });
 const fmtTime = d => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
-function pod(p, at = new Date()) {
-  if (!p.surgeryDate) return null;
-  return Math.round((dayStart(at) - parseYMD(p.surgeryDate)) / 864e5);
+// A patient has a list of procedures ({ key, other, date }): the index surgery first, then takebacks etc.
+// Patients saved before multi-procedure support have single procedure/procedureOther/surgeryDate fields.
+function procs(p) {
+  if (Array.isArray(p.procs)) return p.procs;
+  return p.procedure || p.surgeryDate ? [{ key: p.procedure || '', other: p.procedureOther || '', date: p.surgeryDate || '' }] : [];
 }
+const procKeys = p => procs(p).map(x => x.key).filter(Boolean);
+const podOn = (date, at = new Date()) => (date ? Math.round((dayStart(at) - parseYMD(date)) / 864e5) : null);
 const podLabel = n => (n == null ? '' : n < 0 ? 'Pre-op' : `POD ${n}`);
-const procLabel = p => (p.procedure === 'other' || !procByKey(p.procedure) ? p.procedureOther || '' : procByKey(p.procedure).label);
-const procShort = p => (p.procedure === 'other' || !procByKey(p.procedure) ? p.procedureOther || '' : procByKey(p.procedure).short);
+const entryName = (x, short) => (x.key === 'other' || !procByKey(x.key) ? x.other || '' : procByKey(x.key)[short ? 'short' : 'label']);
+// e.g. "POD 5 s/p Radical cystectomy w/ ileal conduit (Mon, 10/5)"
+function procLine(x, at = new Date(), short = false) {
+  const d = podOn(x.date, at);
+  const name = entryName(x, short);
+  return [d != null ? podLabel(d) + (name ? ' s/p' : '') : '', name, !short && x.date ? `(${fmtDayShort(parseYMD(x.date))})` : ''].filter(Boolean).join(' ');
+}
+const procLines = (p, at, short) => procs(p).map(x => procLine(x, at, short)).filter(Boolean);
+// Compact POD for every procedure, e.g. "POD 5/1" after a takeback.
+function podShort(p, at = new Date()) {
+  const ds = procs(p).map(x => podOn(x.date, at)).filter(d => d != null);
+  if (!ds.length) return '';
+  return ds.every(d => d < 0) ? 'Pre-op' : 'POD ' + ds.map(d => (d < 0 ? 'pre' : d)).join('/');
+}
 const joinNote = (list, note) => [list.join(', '), note].filter(Boolean).join('; ');
 const drainText = o => joinNote(o.drains || [], o.drainsNote);
 const dietText = o => joinNote(o.diet ? [o.diet] : [], o.dietNote);
@@ -186,11 +202,7 @@ function noteReport(n, p) {
   const L = [];
   L.push([p.name, p.age ? `${p.age} y/o` : ''].filter(Boolean).join(', ') + (p.room ? ` — Rm ${p.room}` : ''));
   L.push(`${fmtDay(at)} ${fmtTime(at)} (${n.session} rounds)`);
-  const d = pod(p, at);
-  const proc = procLabel(p);
-  if (proc || d != null) {
-    L.push([d != null ? `${podLabel(d)}${proc ? ' s/p' : ''}` : '', proc, p.surgeryDate ? `(${fmtDayShort(parseYMD(p.surgeryDate))})` : ''].filter(Boolean).join(' '));
-  }
+  L.push(...procLines(p, at));
   L.push(`PMH: ${p.pmh || '—'}`);
   L.push(`ALL: ${p.allergies || '—'}`);
   L.push(`Drains/lines: ${drainText(n) || 'None'}`);
@@ -211,13 +223,13 @@ function noteReport(n, p) {
 
 // Template questions in order, plus any answered questions no longer in the template (procedure changed).
 function questionsFor(n, p) {
-  const qs = subjFor(p.procedure);
+  const qs = subjFor(procKeys(p));
   for (const id of Object.keys(n?.subj || {})) if (!qs.some(q => q.id === id) && QUESTIONS[id]) qs.splice(qs.length - 1, 0, QUESTIONS[id]);
   return qs;
 }
 const followText = (n, q) => (q.follow && n.subj?.[q.id] === q.follow.when && n.follow?.[q.id] ? `, ${n.follow[q.id]} ${q.follow.unit}` : '');
 const subjLines = (n, p) => questionsFor(n, p).filter(q => n.subj?.[q.id]).map(q => `${q.label}: ${n.subj[q.id]}${followText(n, q)}`);
-const examSystems = (n, p) => examFor(p.procedure, n.drains || []);
+const examSystems = (n, p) => examFor(procKeys(p), n.drains || []);
 
 // ---------- census ----------
 function byRoom(a, b) {
@@ -248,7 +260,7 @@ function viewCensus() {
     return `<li><button class="row" data-act="go" data-href="#/p/${p.id}">
       <div class="row-main">
         <div class="row-title">${esc(p.name)}${p.age ? `<span class="muted">, ${esc(p.age)}</span>` : ''}</div>
-        <div class="row-sub">${[podLabel(pod(p)), procShort(p)].filter(Boolean).map(esc).join(' · ')}</div>
+        ${procLines(p, today, true).map(l => `<div class="row-sub">${esc(l)}</div>`).join('')}
         ${meta ? `<div class="row-sub muted">${esc(meta)}</div>` : ''}
       </div>
       <div class="row-side">
@@ -259,9 +271,17 @@ function viewCensus() {
 }
 
 // ---------- patient form ----------
+const procRow = x => `<div class="proc-row">
+  <div class="proc-row-head"><span class="sub-label proc-title"></span><button type="button" class="btn small subtle" data-act="rmProc">Remove</button></div>
+  <select class="proc-key" aria-label="Procedure"><option value="">Select procedure…</option>
+    ${PROCEDURES.map(o => `<option value="${o.key}"${o.key === x.key ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>
+  <input class="proc-other" value="${esc(x.other)}" placeholder="Procedure name" aria-label="Procedure name">
+  <div class="proc-date-row"><input type="date" class="proc-date" value="${esc(x.date)}" aria-label="Procedure date"><span class="hint proc-pod"></span></div>
+</div>`;
+
 function viewPatientForm(p) {
   const isNew = !p;
-  const v = p || { name: '', age: '', room: '', procedure: '', procedureOther: '', surgeryDate: ymd(new Date()), pmh: '', allergies: '', drains: [], drainsNote: '', diet: '', dietNote: '' };
+  const v = p || { name: '', age: '', room: '', procs: [{ key: '', other: '', date: ymd(new Date()) }], pmh: '', allergies: '', drains: [], drainsNote: '', diet: '', dietNote: '' };
   let drainsTouched = !isNew;
 
   setTop({
@@ -278,13 +298,8 @@ function viewPatientForm(p) {
       </div>
     </section>
     <section class="card">
-      <label class="field"><span>Procedure</span><select name="procedure">
-        <option value="">Select…</option>
-        ${PROCEDURES.map(x => `<option value="${x.key}"${x.key === v.procedure ? ' selected' : ''}>${esc(x.label)}</option>`).join('')}
-      </select></label>
-      <label class="field" id="procOther"${v.procedure === 'other' ? '' : ' hidden'}><span>Procedure name</span><input name="procedureOther" value="${esc(v.procedureOther)}"></label>
-      <label class="field"><span>Surgery date</span><input type="date" name="surgeryDate" value="${esc(v.surgeryDate)}"></label>
-      <p class="hint" id="podHint"></p>
+      <div id="procs">${(procs(v).length ? procs(v) : [{ key: '', other: '', date: ymd(new Date()) }]).map(procRow).join('')}</div>
+      <button type="button" class="btn small" data-act="addProc">+ Add procedure (e.g. takeback)</button>
     </section>
     <section class="card">
       <label class="field"><span>PMH</span><textarea name="pmh" rows="2">${esc(v.pmh)}</textarea></label>
@@ -301,19 +316,35 @@ function viewPatientForm(p) {
 
   const form = document.getElementById('pf');
   const f = name => form.elements[name];
-  const updatePod = () => {
-    const d = f('surgeryDate').value ? pod({ surgeryDate: f('surgeryDate').value }) : null;
-    document.getElementById('podHint').textContent = d == null ? '' : `${podLabel(d)} today`;
-  };
-  updatePod();
-  f('surgeryDate').addEventListener('change', updatePod);
-  f('procedure').addEventListener('change', () => {
-    const key = f('procedure').value;
-    document.getElementById('procOther').hidden = key !== 'other';
-    const proc = procByKey(key);
-    if (proc && !drainsTouched) setChips('drains', proc.drains);
-    if (proc?.diet && !readChips('diet').length) setChips('diet', [proc.diet]);
+  const procsEl = document.getElementById('procs');
+  const rows = () => [...procsEl.querySelectorAll('.proc-row')];
+  // Label rows, show "Remove" only when there's more than one, and refresh each row's POD.
+  const refreshRows = () => rows().forEach((r, i, all) => {
+    r.querySelector('.proc-title').textContent = i === 0 ? 'Index surgery' : 'Additional procedure';
+    r.querySelector('[data-act=rmProc]').hidden = all.length < 2;
+    r.querySelector('.proc-other').hidden = r.querySelector('.proc-key').value !== 'other';
+    const d = podOn(r.querySelector('.proc-date').value);
+    r.querySelector('.proc-pod').textContent = d == null ? '' : `${podLabel(d)} today`;
   });
+  const readProcs = () => rows()
+    .map(r => { const key = r.querySelector('.proc-key').value; return { key, other: key === 'other' ? r.querySelector('.proc-other').value.trim() : '', date: r.querySelector('.proc-date').value }; })
+    .filter(x => x.key || x.date)
+    .sort((a, b) => (!a.date) - (!b.date) || a.date.localeCompare(b.date));
+  refreshRows();
+  procsEl.addEventListener('change', e => {
+    refreshRows();
+    if (!e.target.classList.contains('proc-key')) return;
+    const picked = readProcs().map(x => procByKey(x.key)).filter(Boolean);
+    if (!drainsTouched) setChips('drains', [...new Set(picked.flatMap(x => x.drains))]);
+    const diet = picked.find(x => x.diet)?.diet;
+    if (diet && !readChips('diet').length) setChips('diet', [diet]);
+  });
+  H.addProc = () => {
+    procsEl.insertAdjacentHTML('beforeend', procRow({ key: '', other: '', date: ymd(new Date()) }));
+    refreshRows();
+    rows().at(-1).querySelector('.proc-key').focus();
+  };
+  H.rmProc = el => { el.closest('.proc-row').remove(); refreshRows(); };
   form.addEventListener('submit', e => { e.preventDefault(); H.save(); });
 
   H.onChip = group => { if (group === 'drains') drainsTouched = true; };
@@ -325,9 +356,7 @@ function viewPatientForm(p) {
       name,
       age: f('age').value.trim(),
       room: f('room').value.trim(),
-      procedure: f('procedure').value,
-      procedureOther: f('procedure').value === 'other' ? f('procedureOther').value.trim() : '',
-      surgeryDate: f('surgeryDate').value,
+      procs: readProcs(),
       pmh: f('pmh').value.trim(),
       allergies: f('allergies').value.trim(),
       drains: readChips('drains'),
@@ -341,6 +370,7 @@ function viewPatientForm(p) {
       data().patients.push(target);
     } else {
       Object.assign(target, vals);
+      delete target.procedure; delete target.procedureOther; delete target.surgeryDate;
     }
     persist();
     navigate(`#/p/${target.id}`);
@@ -377,12 +407,14 @@ function viewPatient(p) {
     left: backBtn(discharged ? '#/settings' : '#/', discharged ? 'Back' : 'Census'),
     right: `<button class="tb-btn" data-act="go" data-href="#/p/${p.id}/edit">Edit</button>`,
   });
-  const d = pod(p);
   const info = [['PMH', p.pmh], ['ALL', p.allergies], ['Drains', drainText(p)], ['Diet', dietText(p)]];
   main.innerHTML = `
     <section class="card info">
-      <div class="info-proc">${esc(procLabel(p) || 'No procedure entered')}</div>
-      ${p.surgeryDate ? `<div class="muted">${esc(fmtDayShort(parseYMD(p.surgeryDate)))} · <strong>${esc(podLabel(d))}</strong> today</div>` : ''}
+      ${procs(p).length ? procs(p).map(x => {
+        const d = podOn(x.date);
+        return `<div class="info-proc">${esc(entryName(x) || 'Procedure')}</div>
+          ${x.date ? `<div class="muted">${esc(fmtDayShort(parseYMD(x.date)))} · <strong>${esc(podLabel(d))}</strong> today</div>` : ''}`;
+      }).join('') : '<div class="info-proc">No procedure entered</div>'}
       <dl>${info.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v || '—')}</dd>`).join('')}</dl>
     </section>
     <div class="actions">
@@ -392,11 +424,11 @@ function viewPatient(p) {
     <h2 class="section-title">Notes${ns.length ? ` (${ns.length})` : ''}</h2>
     ${ns.length ? `<ul class="timeline">${ns.map(n => {
       const at = new Date(n.at);
-      const nd = pod(p, at);
+      const nd = podShort(p, at);
       return `<li><button class="note-card" data-act="go" data-href="#/n/${n.id}">
         <div class="note-card-head"><span class="strong">${esc(fmtDayShort(at))}</span>
           <span class="badge done">${esc(n.session)}</span>
-          ${nd != null ? `<span class="muted">${esc(podLabel(nd))}</span>` : ''}
+          ${nd ? `<span class="muted">${esc(nd)}</span>` : ''}
           <span class="muted right">${esc(fmtTime(at))}</span></div>
         <div class="sum">${noteSummary(n, p).map(i => `<span class="pill${i.warn ? ' warn' : ''}">${esc(i.t)}</span>`).join('')}</div>
         ${n.comment ? `<div class="note-card-comment">${esc(n.comment)}</div>` : ''}
@@ -475,7 +507,7 @@ function viewNoteEditor({ p, note, copy }) {
   let systems = [];
 
   function renderExam(sel, text) {
-    systems = examFor(p.procedure, readChips('drains'));
+    systems = examFor(procKeys(p), readChips('drains'));
     document.getElementById('exam').innerHTML = systems.map(s => `<section class="card exam-sys">
       <div class="sys-head"><h3>${esc(s.name)}</h3>
         <span><button type="button" class="btn small" data-act="sysNormal" data-sys="${esc(s.name)}">Normal</button>
@@ -510,8 +542,7 @@ function viewNoteEditor({ p, note, copy }) {
   const normalsFor = name => systems.find(s => s.name === name).chips.filter(c => c.n).map(c => c.t);
   const atDate = () => (form.elements.at.value ? new Date(form.elements.at.value) : new Date());
   const updatePod = () => {
-    const nd = pod(p, atDate());
-    document.getElementById('podLine').textContent = nd == null ? '' : podLabel(nd);
+    document.getElementById('podLine').textContent = podShort(p, atDate());
   };
 
   renderExam(d.exam, d.examText);
@@ -626,9 +657,8 @@ function viewReport() {
     const blocks = pts.map(p => {
       const n = notesFor(p.id).find(x => sameDay(new Date(x.at), day) && (which === 'Latest' || x.session === which));
       if (n) return noteReport(n, p);
-      const d = pod(p);
       return [`${p.name}${p.age ? `, ${p.age} y/o` : ''}${p.room ? ` — Rm ${p.room}` : ''}`,
-        [podLabel(d), procLabel(p)].filter(Boolean).join(' s/p '), `No ${which === 'Latest' ? '' : which + ' '}note today`].filter(Boolean).join('\n');
+        ...procLines(p, day), `No ${which === 'Latest' ? '' : which + ' '}note today`].filter(Boolean).join('\n');
     });
     text = `Rounds — ${fmtDay(day)}${which === 'Latest' ? '' : ` (${which})`}\n\n` + blocks.join('\n\n' + '-'.repeat(28) + '\n\n');
     document.getElementById('rep').textContent = text;
@@ -653,7 +683,7 @@ function viewSettings() {
     <h2 class="section-title">Discharged patients (${gone.length})</h2>
     ${gone.length ? `<ul class="list">${gone.map(p => `<li><button class="row" data-act="go" data-href="#/p/${p.id}">
         <div class="row-main"><div class="row-title">${esc(p.name)}</div>
-        <div class="row-sub muted">${esc([procShort(p), p.dischargedAt ? 'D/c ' + fmtDayShort(new Date(p.dischargedAt)) : ''].filter(Boolean).join(' · '))}</div></div>
+        <div class="row-sub muted">${esc([procs(p).map(x => entryName(x, true)).filter(Boolean).join(' + '), p.dischargedAt ? 'D/c ' + fmtDayShort(new Date(p.dischargedAt)) : ''].filter(Boolean).join(' · '))}</div></div>
       </button></li>`).join('')}</ul>` : '<p class="empty small">None.</p>'}
 
     <h2 class="section-title">Backup</h2>
