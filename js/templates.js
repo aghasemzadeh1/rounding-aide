@@ -14,6 +14,8 @@ const Q = {
   // `follow` shows a number box when the given answer is picked (stored per note, not copied forward).
   amb:       { id: 'amb', label: 'Ambulating', short: 'Amb', options: ['Yes', 'No'], follow: { when: 'Yes', label: 'Laps around the floor today', unit: 'laps' } },
   is:        { id: 'is', label: 'Incentive spirometer', short: 'IS', options: ['Using', 'Not using'] },
+  sob:       { id: 'sob', label: 'Shortness of breath', short: 'SOB', options: ['None', 'With exertion', 'At rest'], flag: ['At rest'] },
+  cough:     { id: 'cough', label: 'Cough', short: 'Cough', options: ['None', 'Dry', 'Productive'], flag: ['Productive'] },
   events:    { id: 'events', label: 'Overnight/interval events', short: 'Events', options: ['None', 'See comments'], flag: ['See comments'] },
   // procedure-specific
   leg:       { id: 'leg', label: 'Calf pain/leg swelling', short: 'Leg sx', options: ['Denies', 'Reports'], flag: ['Reports'] },
@@ -28,7 +30,7 @@ const Q = {
 };
 export const QUESTIONS = Q;
 
-const COMMON_SUBJ = [Q.pain, Q.nv, Q.flatus, Q.bm, Q.po, Q.amb, Q.is];
+const COMMON_SUBJ = [Q.pain, Q.nv, Q.flatus, Q.bm, Q.po, Q.amb, Q.is, Q.sob, Q.cough];
 
 // Exam chips: `n: true` marks the finding filled in by "Normal" / "All normal".
 // `g` puts a chip in a labeled sub-row; EXAM_GROUPS says whether that row is pick-one (true) or pick-many (false).

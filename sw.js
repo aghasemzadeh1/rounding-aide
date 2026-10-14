@@ -1,6 +1,6 @@
 // Offline support: app files are served network-first (so updates show up right away)
 // and fall back to the cache when offline. Patient data never passes through here.
-const CACHE = 'rounding-aide-v3';
+const CACHE = 'rounding-aide-v4';
 const ASSETS = [
   './',
   './index.html',
